@@ -1,4 +1,4 @@
-# 🤖 LangGraph Telegram Agent 2026
+# 🤖 LangGraph Telegram Agent 
 
 A state-of-the-art Telegram bot built with **LangGraph**, featuring
 durable execution, asynchronous persistence, and **"Time Travel" state
