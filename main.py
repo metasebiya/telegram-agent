@@ -1,81 +1,69 @@
+# main.py
 import asyncio
 import os
-from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from langchain_core.messages import HumanMessage
+from dotenv import load_dotenv
 
-# Import your graph and state from the other files
-from graph import app
-from state import AgentState
+from graph import get_agent_app
 
 load_dotenv()
-
-# Configuration
-API_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID") # The ID of your public channel
-
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
 dp = Dispatcher()
-
-# --- HANDLERS ---
-
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    await message.answer("Hello! Send me a topic, and I'll draft a post for your channel. "
-                         "You'll need to /approve it before it goes live.")
 
 @dp.message(Command("approve"))
 async def cmd_approve(message: types.Message):
-    """
-    This is the HUMAN-IN-THE-LOOP trigger.
-    It resumes the graph after the 'approval' interrupt.
-    """
-    thread_id = str(message.from_user.id)
+    thread_id = str(message.chat.id)
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Check if the graph is actually waiting for us
-    state = await app.aget_state(config)
-    if not state.next:
-        return await message.answer("No pending posts to approve.")
+    # Use 'async with' to get the compiled app correctly
+    async with get_agent_app() as app:
+        await app.aupdate_state(config, {"is_approved": True}, as_node="approval")
+        state = await app.aget_state(config)
+        draft = state.values.get("draft_content")
+        
+        if draft:
+            await bot.send_message(os.getenv("CHANNEL_ID"), draft)
+            await message.answer("🚀 Published!")
 
-    # RESUME the graph: 
-    # We update the state to 'approved=True' and tell it to continue
-    await app.aupdate_state(config, {"is_approved": True}, as_node="approval")
-    
-    # Kick the graph back into action
-    async for event in app.astream(None, config):
-        if "publisher" in event:
-            content = event["publisher"]["draft_content"]
-            # Actually post to the public channel
-            await bot.send_message(chat_id=CHANNEL_ID, text=content)
-            await message.answer("✅ Post published to the channel!")
-
-@dp.message(F.text)
+@dp.message(F.text & ~F.text.startswith('/'))
 async def handle_topic(message: types.Message):
-    """
-    Accepts a topic and starts the 'Content Creator' node.
-    """
-    thread_id = str(message.from_user.id)
+    thread_id = str(message.chat.id)
     config = {"configurable": {"thread_id": thread_id}}
     
-    await message.answer("🤖 Brainstorming your post... please wait.")
+    await message.answer("🤖 Brainstorming...")
     
-    # Start the graph
-    inputs = {"messages": [HumanMessage(content=message.text)], "is_approved": False}
+    async with get_agent_app() as app:
+        input_data = {"messages": [HumanMessage(content=message.text)]}
+        final_draft = ""
+        
+        async for event in app.astream(input_data, config, stream_mode="values"):
+            if "draft_content" in event:
+                final_draft = event["draft_content"]
+        
+        await message.answer(f"📝 **DRAFT:**\n\n{final_draft}\n\nUse /approve to post.")
+@dp.message(Command("history"))
+async def cmd_history(message: types.Message):
+    thread_id = str(message.chat.id)
+    config = {"configurable": {"thread_id": thread_id}}
     
-    async for event in app.astream(inputs, config):
-        if "creator" in event:
-            draft = event["creator"]["draft_content"]
-            await message.answer(
-                f"📝 **DRAFT GENERATED:**\n\n{draft}\n\n"
-                f"Type /approve to post it, or send a new message to revise it."
-            )
+    async with get_agent_app() as app:
+        # Fetch the last 5 snapshots of this conversation
+        history = []
+        async for state in app.aget_state_history(config, limit=5):
+            # We look for states that have content in them
+            content = state.values.get("draft_content", "No draft yet")
+            # Truncate for the message
+            summary = (content[:50] + '...') if len(content) > 50 else content
+            history.append(f"🆔 `{state.config['configurable']['checkpoint_id']}`\n📝 {summary}")
 
-# --- MAIN LOOP ---
-
+        if not history:
+            await message.answer("No history found for this thread.")
+        else:
+            await message.answer("🕒 **Recent Snapshots:**\n\n" + "\n\n".join(history))
+            
 async def main():
-    print("Bot is starting...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

@@ -1,75 +1,44 @@
+# graph.py
 import os
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_openai import ChatOpenAI
 from state import AgentState
 
 load_dotenv()
 
-# Initialize the LLM
-llm = ChatOpenAI(model="gpt-4o")
-
-# --- NODES ---
-
+# --- NODES & ROUTING (Keep these as they were) ---
 async def content_creator(state: AgentState):
-    """Generates the post draft based on message history."""
-    messages = state["messages"]
-    
-    # Simple prompt logic
-    response = await llm.ainvoke(messages)
-    
-    return {
-        "draft_content": response.content,
-        "revision_count": state.get("revision_count", 0) + 1,
-        "is_approved": False # Reset approval for new drafts
-    }
+    llm = ChatOpenAI(model="gpt-4o")
+    response = await llm.ainvoke(state["messages"])
+    return {"draft_content": response.content, "is_approved": False}
 
-async def human_approval(state: AgentState):
-    """
-    This node is a 'passive' node. 
-    The graph stops HERE because of the interrupt.
-    """
+async def approval_node(state: AgentState):
     return state
 
-# --- ROUTING LOGIC ---
+def route_post(state: AgentState):
+    return "finish" if state.get("is_approved") else "stay_paused"
 
-def should_publish(state: AgentState):
-    """Check if the user has approved the post."""
-    if state.get("is_approved"):
-        return "publisher"
-    return END # If not approved, wait for next user input
+# --- GRAPH BUILDER ---
+builder = StateGraph(AgentState)
+builder.add_node("creator", content_creator)
+builder.add_node("approval", approval_node)
+builder.add_edge(START, "creator")
+builder.add_edge("creator", "approval")
+builder.add_conditional_edges("approval", route_post, {"finish": END, "stay_paused": END})
 
-# --- GRAPH CONSTRUCTION ---
-
-workflow = StateGraph(AgentState)
-
-# Add our nodes
-workflow.add_node("creator", content_creator)
-workflow.add_node("approval", human_approval)
-
-# We don't need a formal 'publisher' node if main.py handles the API call,
-# but we use 'approval' as the fork point.
-
-workflow.add_edge(START, "creator")
-workflow.add_edge("creator", "approval")
-
-# Conditional path
-workflow.add_conditional_edges(
-    "approval",
-    should_publish,
-    {
-        "publisher": END, # In main.py, we detect if 'publisher' was reached
-        END: END
-    }
-)
-
-# --- PERSISTENCE ---
-# This creates a local SQLite file to store every step for 'Time Travel'
-memory = SqliteSaver.from_conn_string("./checkpoints/state.db")
-
-# Compile the graph with an INTERRUPT
-app = workflow.compile(
-    checkpointer=memory, 
-    interrupt_before=["approval"] 
-)
+# --- THE FIX: ASYNC LIFECYCLE ---
+@asynccontextmanager
+async def get_agent_app():
+    """
+    Ensures the AsyncSqliteSaver is properly entered before 
+    passing it to the compiler.
+    """
+    async with AsyncSqliteSaver.from_conn_string("checkpoints.db") as memory:
+        # Now 'memory' is the actual BaseCheckpointSaver instance
+        yield builder.compile(
+            checkpointer=memory,
+            interrupt_before=["approval"]
+        )
