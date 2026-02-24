@@ -62,7 +62,38 @@ async def cmd_history(message: types.Message):
             await message.answer("No history found for this thread.")
         else:
             await message.answer("🕒 **Recent Snapshots:**\n\n" + "\n\n".join(history))
-            
+@dp.message(Command("rewind"))
+async def cmd_rewind(message: types.Message):
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ Please provide a checkpoint ID.\nUsage: `/rewind <id>`")
+        return
+
+    target_checkpoint_id = args[1]
+    thread_id = str(message.chat.id)
+    
+    # Configuration to find the SPECIFIC past moment
+    past_config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "checkpoint_id": target_checkpoint_id
+        }
+    }
+
+    async with get_agent_app() as app:
+        # 1. Fetch the state from that specific point in time
+        past_state = await app.aget_state(past_config)
+        
+        if not past_state.values:
+            await message.answer("❌ Could not find that checkpoint.")
+            return
+
+        # 2. "Fork" the history: Update the CURRENT state with the PAST values
+        # This creates a new checkpoint that is a copy of the old one
+        current_config = {"configurable": {"thread_id": thread_id}}
+        await app.aupdate_state(current_config, past_state.values)
+        
+        await message.answer(f"⏪ **Rewound!** State restored to:\n\n{past_state.values.get('draft_content')}")
 async def main():
     await dp.start_polling(bot)
 
