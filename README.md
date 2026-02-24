@@ -21,7 +21,7 @@ thoughts and can resume from a crash without losing a single token.
 -   **Asynchronous Persistence:** Powered by `AsyncSqliteSaver` and
     `aiosqlite` for non-blocking database I/O.
 -   **Flexible Model Support:** Compatible with OpenAI, Google Gemini,
-    and Groq.
+    and Grok.
 
 ------------------------------------------------------------------------
 
