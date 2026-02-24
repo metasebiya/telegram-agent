@@ -76,7 +76,7 @@ uv run main.py
                                           `checkpoint_ids` and draft
                                           snippets
 
-  `/rewind <id>`                          Reverts the agent's memory to
+  `/rewind id`                         Reverts the agent's memory to
                                           that specific checkpoint
   -----------------------------------------------------------------------
 
